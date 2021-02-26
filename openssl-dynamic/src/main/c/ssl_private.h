@@ -319,6 +319,11 @@ struct tcn_ssl_ctxt_t {
     jobject                  ssl_private_key_method;
     jmethodID                ssl_private_key_sign_method;
     jmethodID                ssl_private_key_decrypt_method;
+
+    jobject                  cert_compressions[3];
+    jmethodID                alg_id_get_method;
+    jmethodID                compress_method;
+    jmethodID                decompress_method;
 #endif // OPENSSL_IS_BORINGSSL
 
     tcn_ssl_verify_config_t  verify_config;

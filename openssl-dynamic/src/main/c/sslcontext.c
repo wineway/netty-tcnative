@@ -59,6 +59,111 @@ static jmethodID sslPrivateKeyMethodSignTask_init;
 static jclass    sslPrivateKeyMethodDecryptTask_class;
 static jmethodID sslPrivateKeyMethodDecryptTask_init;
 
+
+typedef enum {
+    zlib = 0,
+    broti,
+    zstd
+} compress_type;
+
+int zstd_cert_compress(SSL *ssl, CBB *out, const uint8_t *in, size_t in_len) {
+
+}
+
+int zstd_cert_decompress(SSL *ssl, CRYPTO_BUFFER **out,
+                                     size_t uncompressed_len,
+                                     const uint8_t *in, size_t in_len) {
+
+}
+
+int zlib_cert_compress(SSL *ssl, CBB *out, const uint8_t *in, size_t in_len) {
+
+}
+
+int zlib_cert_decompress(SSL *ssl, CRYPTO_BUFFER **out,
+                         size_t uncompressed_len,
+                         const uint8_t *in, size_t in_len) {
+
+}
+
+int jba2u8a(JNIEnv* e, jbyteArray* jba, const uint8_t** u8a) {
+    jsize size = (*e) ->GetArrayLength(e, *jba);
+    jbyte* buf;
+    (*e)->GetByteArrayRegion(e, *jba, 0, size, buf);
+    *u8a = (uint8_t*) buf;
+    return sizeof(uint8_t) / sizeof(jbyte) * size;
+}
+
+int broti_cert_compress(SSL *ssl, CBB *out, const uint8_t *in, size_t in_len) {
+    tcn_ssl_state_t *state = tcn_SSL_get_app_state(ssl);
+    if (state == NULL || state->ctx == NULL) {
+        // Signal back that we want to fail the handshake
+        return 0;
+    }
+    state->ctx->cert_compressions[broti];
+    jobject object = state->ctx->cert_compressions[broti];
+    jmethodID method = state->ctx->decompress_method;
+
+    JNIEnv *e = NULL;
+    tcn_get_java_env(&e);
+
+    const uint8_t *out_b;
+    jobject ret = (*e) -> CallObjectMethod(e, object, method, in, in_len, broti);
+    jsize size = jba2u8a(e, (jbyteArray*) ret, &out_b);
+    CBB_add_bytes(out, out_b, size);
+    return 0;
+}
+
+int broti_cert_decompress(SSL *ssl, CRYPTO_BUFFER **out,
+                         size_t uncompressed_len,
+                         const uint8_t *in, size_t in_len) {
+    tcn_ssl_state_t *state = tcn_SSL_get_app_state(ssl);
+    if (state == NULL || state->ctx == NULL) {
+        // Signal back that we want to fail the handshake
+        return 0;
+    }
+    jobject object = state->ctx->cert_compressions[broti];
+    jmethodID method = state->ctx->compress_method;
+    JNIEnv *e = NULL;
+    tcn_get_java_env(&e);
+    uint8_t* compressed = (*out)->data;
+    jobject ret = (*e) -> CallObjectMethod(e, object, method, (*out)->data, (*out)->len, broti);
+    jba2u8a(e, (jbyteArray*) ret, &in);
+    return 1;
+
+}
+
+void *compress_method_by_id(compress_type id) {
+    switch (id) {
+        case broti:
+            return broti_cert_compress;
+    }
+}
+
+void *decompress_method_by_id(compress_type id) {
+    switch (id) {
+        case broti:
+            return broti_cert_decompress;
+    }
+}
+
+
+
+TCN_IMPLEMENT_CALL(int, SSLContext, registerCertCompressionAlg)(jlong ctx, jclass class, jobject object, int alg_id) {
+    tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
+    c->cert_compressions[alg_id] = object;
+    JNIEnv *e = NULL;
+    tcn_get_java_env(&e);
+    jmethodID jmethodId;
+    NETTY_JNI_UTIL_GET_METHOD(e, class, c->compress_method, "compress", "(LII)[B", error);
+    NETTY_JNI_UTIL_GET_METHOD(e, class, c->decompress_method, "compress", "(LII)[B", error);
+    return SSL_CTX_add_cert_compression_alg(
+            c->ctx, alg_id, compress_method_by_id(alg_id),
+            decompress_method_by_id(alg_id));
+    error:
+    return 1;
+}
+
 extern apr_pool_t *tcn_global_pool;
 
 static apr_status_t ssl_context_cleanup(void *data)
@@ -1292,7 +1397,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKeys0)(TCN_STDARGS, jlong c
         tcn_ThrowException(e, "OPENSSL_malloc() returned null");
         return;
     }
-    
+
     for (i = 0; i < cnt; ++i) {
         key = b + (SSL_SESSION_TICKET_KEY_SIZE * i);
         memcpy(ticket_keys[i].key_name, key, 16);
@@ -1341,7 +1446,7 @@ tcn_ssl_task_t* tcn_ssl_task_new(JNIEnv* e, jobject task) {
     if (sslTask == NULL) {
         return NULL;
     }
-    
+
     if ((sslTask->task = (*e)->NewGlobalRef(e, task)) == NULL) {
         // NewGlobalRef failed because we ran out of memory, free what we malloc'ed and fail the handshake.
         OPENSSL_free(sslTask);
@@ -1898,7 +2003,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setCertRequestedCallback)(TCN_STDARGS, jlon
             tcn_throwOutOfMemoryError(e, "Unable to allocate memory for global reference");
             return;
         }
-       
+
         c->cert_requested_callback = cb;
         c->cert_requested_callback_method = method;
 
@@ -2284,7 +2389,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setPrivateKeyMethod)(TCN_STDARGS, jlong ctx
     }
     if (oldMethod != NULL) {
         (*e)->DeleteGlobalRef(e, oldMethod);
-    } 
+    }
 #else
     tcn_ThrowException(e, "Requires BoringSSL");
 #endif // OPENSSL_IS_BORINGSSL
@@ -2363,7 +2468,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSSLSessionCache)(TCN_STDARGS, jlong ctx,
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
 
     TCN_CHECK_NULL(c, ctx, /* void */);
-    
+
     jobject oldCache = c->ssl_session_cache;
     if (cache == NULL) {
         c->ssl_session_cache = NULL;
@@ -2406,7 +2511,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSSLSessionCache)(TCN_STDARGS, jlong ctx,
     }
     if (oldCache != NULL) {
         (*e)->DeleteGlobalRef(e, oldCache);
-    } 
+    }
 }
 
 static int ssl_servername_cb(SSL *ssl, int *ad, void *arg)
@@ -2716,16 +2821,16 @@ static JNINativeMethod* createDynamicMethodsTable(const char* packagePrefix) {
     netty_jni_util_free_dynamic_name(&dynamicTypeName);
     dynamicMethod->name = "setSniHostnameMatcher";
     dynamicMethod->fnPtr = (void *) TCN_FUNCTION_NAME(SSLContext, setSniHostnameMatcher);
-  
+
     dynamicMethod = &dynamicMethods[fixed_method_table_size + 4];
-    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/SSLPrivateKeyMethod;)V", dynamicTypeName, error); 
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/SSLPrivateKeyMethod;)V", dynamicTypeName, error);
     NETTY_JNI_UTIL_PREPEND("(JL", dynamicTypeName,  dynamicMethod->signature, error);
     netty_jni_util_free_dynamic_name(&dynamicTypeName);
     dynamicMethod->name = "setPrivateKeyMethod";
     dynamicMethod->fnPtr = (void *) TCN_FUNCTION_NAME(SSLContext, setPrivateKeyMethod);
 
     dynamicMethod = &dynamicMethods[fixed_method_table_size + 5];
-    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/SSLSessionCache;)V", dynamicTypeName, error); 
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/SSLSessionCache;)V", dynamicTypeName, error);
     NETTY_JNI_UTIL_PREPEND("(JL", dynamicTypeName,  dynamicMethod->signature, error);
     netty_jni_util_free_dynamic_name(&dynamicTypeName);
     dynamicMethod->name = "setSSLSessionCache";
@@ -2770,7 +2875,7 @@ jint netty_internal_tcnative_SSLContext_JNI_OnLoad(JNIEnv* env, const char* pack
 
     NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/CertificateVerifierTask", name, error);
     NETTY_JNI_UTIL_LOAD_CLASS(env, certificateVerifierTask_class, name, error);
-  
+
     NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/internal/tcnative/CertificateVerifier;)V", name, error);
     NETTY_JNI_UTIL_PREPEND("(J[[BLjava/lang/String;L", name, combinedName, error);
     TCN_REASSIGN(name, combinedName);

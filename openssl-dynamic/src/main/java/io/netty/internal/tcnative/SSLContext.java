@@ -676,4 +676,6 @@ public final class SSLContext {
      * @return {@code true} if successful, {@code false} otherwise.
      */
     public static native boolean setNumTickets(long ctx, int tickets);
+
+    public static native int a();
 }
